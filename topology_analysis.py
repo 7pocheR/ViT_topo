@@ -14,11 +14,11 @@ import torch
 
 # Add ripser++ GPU acceleration if available
 try:
-    import ripser_plusplus as rpp_py
+    import ripserplusplus as rpp_py
     USE_GPU = torch.cuda.is_available()
     print(f"GPU is {'available' if USE_GPU else 'not available'} for persistent homology")
 except ImportError:
-    print("ripser++ not found, falling back to CPU ripser")
+    print("ripserplusplus not found, falling back to CPU ripser")
     USE_GPU = False
 
 def create_pointclouds(features, labels, class_label=0):
@@ -135,8 +135,8 @@ def compute_persistent_homology(pointcloud, k=14, max_dim=3, batch_size=1000):
     Args:
         pointcloud: Numpy array of shape (n_points, n_dimensions)
         k: Number of nearest neighbors for distance computation
-        max_dim: Maximum homology dimension (set back to 3 for β₀, β₁, β₂, β₃)
-        batch_size: Batch size for processing large pointclouds (restored to 1000 with GPU)
+        max_dim: Maximum homology dimension (set to 3 for β₀, β₁, β₂, β₃)
+        batch_size: Batch size for processing large pointclouds
         
     Returns:
         Persistence diagrams
@@ -154,17 +154,17 @@ def compute_persistent_homology(pointcloud, k=14, max_dim=3, batch_size=1000):
             # Use ripser++ with GPU acceleration
             print("Using GPU acceleration for persistent homology with max_dim=3")
             
-            # Convert numpy array to torch tensor and move to GPU
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            point_cloud_tensor = torch.tensor(pointcloud, dtype=torch.float32).to(device)
-            
-            # Compute distance matrix on GPU
-            dist_matrix = torch.cdist(point_cloud_tensor, point_cloud_tensor)
-            
-            # Use ripser++ to compute persistence diagrams
-            dgms = rpp_py.run_rips_plusplus(dist_matrix.cpu().numpy(), max_dim)
-            
-            return dgms
+            # Convert numpy array to distance matrix if needed
+            if pointcloud.shape[1] > 1:  # Not already a distance matrix
+                # Tell ripser++ this is a point cloud and to use dim=max_dim
+                cmd = f"--format point-cloud --dim {max_dim}"
+                diagrams = rpp_py.run(cmd, pointcloud)
+                return diagrams['dgms']
+            else:
+                # Already a distance matrix
+                cmd = f"--format distance --dim {max_dim}"
+                diagrams = rpp_py.run(cmd, pointcloud)
+                return diagrams['dgms']
         else:
             # Fallback to standard ripser
             diagrams = ripser(pointcloud, maxdim=max_dim)['dgms']

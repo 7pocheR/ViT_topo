@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus=1
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 
 # Print node and GPU info for debugging
 echo "====== ENVIRONMENT INFO ======"
@@ -21,8 +21,9 @@ echo "=============================="
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate topo_env
 
-# Install ripser++ if not already installed
-pip install ripser-plusplus
+# Install the correct ripserplusplus package
+echo "Installing ripserplusplus package..."
+pip install ripserplusplus || pip install git+https://github.com/simonzhang00/ripser-plusplus.git
 
 # Print environment information
 echo "====== PYTHON ENVIRONMENT ======"
