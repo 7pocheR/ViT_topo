@@ -11,12 +11,18 @@ from sklearn.neighbors import NearestNeighbors
 from ripser import ripser
 from persim import plot_diagrams
 import torch
+from scipy.spatial.distance import pdist, squareform
 
 # Add ripser++ GPU acceleration if available
 try:
     import ripserplusplus as rpp_py
     USE_GPU = torch.cuda.is_available()
     print(f"GPU is {'available' if USE_GPU else 'not available'} for persistent homology")
+    # Print available functions to help debugging
+    print("Available ripserplusplus functions:")
+    for attr in dir(rpp_py):
+        if not attr.startswith('__'):
+            print(f"  - {attr}")
 except ImportError:
     print("ripserplusplus not found, falling back to CPU ripser")
     USE_GPU = False
@@ -154,17 +160,29 @@ def compute_persistent_homology(pointcloud, k=14, max_dim=3, batch_size=1000):
             # Use ripser++ with GPU acceleration
             print("Using GPU acceleration for persistent homology with max_dim=3")
             
-            # Convert numpy array to distance matrix if needed
-            if pointcloud.shape[1] > 1:  # Not already a distance matrix
-                # Tell ripser++ this is a point cloud and to use dim=max_dim
+            # Check which API function is available in the installed ripserplusplus
+            if hasattr(rpp_py, 'ripser'):
+                # New API uses ripser function
+                diagrams = rpp_py.ripser(pointcloud, maxdim=max_dim)
+                if isinstance(diagrams, dict) and 'dgms' in diagrams:
+                    return diagrams['dgms']
+                else:
+                    return diagrams
+            elif hasattr(rpp_py, 'run'):
+                # Original API uses run function with command string
                 cmd = f"--format point-cloud --dim {max_dim}"
                 diagrams = rpp_py.run(cmd, pointcloud)
                 return diagrams['dgms']
+            elif hasattr(rpp_py, 'rips_dm'):
+                # Direct distance matrix API
+                distances = squareform(pdist(pointcloud))
+                diagrams = rpp_py.rips_dm(distances, maxdim=max_dim)
+                return diagrams
             else:
-                # Already a distance matrix
-                cmd = f"--format distance --dim {max_dim}"
-                diagrams = rpp_py.run(cmd, pointcloud)
-                return diagrams['dgms']
+                # No known API found, fall back to standard ripser
+                print("WARNING: No known ripserplusplus API found, falling back to CPU ripser")
+                diagrams = ripser(pointcloud, maxdim=max_dim)['dgms']
+                return diagrams
         else:
             # Fallback to standard ripser
             diagrams = ripser(pointcloud, maxdim=max_dim)['dgms']
