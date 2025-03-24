@@ -36,25 +36,55 @@ def prepare_mnist_data():
     """
     print("Preparing MNIST data...")
     
+    # Ensure data directory exists
+    data_dir = './data'
+    os.makedirs(data_dir, exist_ok=True)
+    
     # Load MNIST dataset
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
     
-    train_dataset = torchvision.datasets.MNIST(
-        root='./data', 
-        train=True, 
-        download=True, 
-        transform=transform
-    )
+    # Check if MNIST data files already exist
+    mnist_dir = os.path.join(data_dir, 'MNIST/raw')
+    train_img_file = os.path.join(mnist_dir, 'train-images-idx3-ubyte')
+    train_lbl_file = os.path.join(mnist_dir, 'train-labels-idx1-ubyte')
+    test_img_file = os.path.join(mnist_dir, 't10k-images-idx3-ubyte')
+    test_lbl_file = os.path.join(mnist_dir, 't10k-labels-idx1-ubyte')
     
-    test_dataset = torchvision.datasets.MNIST(
-        root='./data', 
-        train=False, 
-        download=True, 
-        transform=transform
-    )
+    files_exist = all(os.path.exists(f) for f in [train_img_file, train_lbl_file, test_img_file, test_lbl_file])
+    download_needed = not files_exist
+    
+    if download_needed:
+        print("MNIST data files not found locally. Will attempt to download.")
+        print("If download fails, please manually place files in:", mnist_dir)
+    else:
+        print("MNIST data files found locally. Using existing files.")
+    
+    try:
+        train_dataset = torchvision.datasets.MNIST(
+            root=data_dir, 
+            train=True, 
+            download=download_needed, 
+            transform=transform
+        )
+        
+        test_dataset = torchvision.datasets.MNIST(
+            root=data_dir, 
+            train=False, 
+            download=download_needed, 
+            transform=transform
+        )
+    except Exception as e:
+        print(f"Error loading MNIST data: {e}")
+        print("Please ensure the following files exist in", mnist_dir)
+        print("- train-images-idx3-ubyte")
+        print("- train-labels-idx1-ubyte")
+        print("- t10k-images-idx3-ubyte")
+        print("- t10k-labels-idx1-ubyte")
+        print("You may need to manually download them from http://yann.lecun.com/exdb/mnist/")
+        raise
     
     # Create binary labels (0 vs. non-0)
     train_dataset.targets = (train_dataset.targets == 0).float()
