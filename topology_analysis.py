@@ -12,6 +12,15 @@ from ripser import ripser
 from persim import plot_diagrams
 import torch
 
+# Add ripser++ GPU acceleration if available
+try:
+    import ripser_plusplus as rpp_py
+    USE_GPU = torch.cuda.is_available()
+    print(f"GPU is {'available' if USE_GPU else 'not available'} for persistent homology")
+except ImportError:
+    print("ripser++ not found, falling back to CPU ripser")
+    USE_GPU = False
+
 def create_pointclouds(features, labels, class_label=0):
     """
     Create pointclouds from extracted features.
@@ -30,8 +39,8 @@ def create_pointclouds(features, labels, class_label=0):
     # Prepare pointclouds dictionary
     pointclouds = {}
     
-    # Define the target size for pointclouds (reduced to 1000 for memory efficiency)
-    target_size = 1000
+    # Define the target size for pointclouds (reduced to 300 for memory efficiency)
+    target_size = 300
     
     # Report the number of samples in this class
     class_sample_count = class_mask.sum().item()
@@ -60,7 +69,7 @@ def create_pointclouds(features, labels, class_label=0):
                 'central_patch': class_features[:, central_patch_idx, :].cpu().numpy(),
                 
                 # Total patches pointcloud - sample more patches to reach the target size
-                'total_patches': class_features[:min(500, len(class_features)), 1:, :].reshape(-1, class_features.shape[-1]).cpu().numpy()
+                'total_patches': class_features[:min(150, len(class_features)), 1:, :].reshape(-1, class_features.shape[-1]).cpu().numpy()
             }
             
             # Ensure consistent size by sampling if needed
@@ -119,15 +128,15 @@ def apply_pca(pointclouds, n_components=50):
     
     return reduced_pointclouds
 
-def compute_persistent_homology(pointcloud, k=14, max_dim=3, batch_size=1000):
+def compute_persistent_homology(pointcloud, k=14, max_dim=2, batch_size=300):
     """
     Compute persistent homology for a pointcloud.
     
     Args:
         pointcloud: Numpy array of shape (n_points, n_dimensions)
         k: Number of nearest neighbors for distance computation
-        max_dim: Maximum homology dimension (keeping at 3 to compute β₀, β₁, β₂, β₃)
-        batch_size: Batch size for processing large pointclouds (reduced to 1000 for memory efficiency)
+        max_dim: Maximum homology dimension
+        batch_size: Batch size for processing large pointclouds (reduced for memory efficiency)
         
     Returns:
         Persistence diagrams
@@ -140,10 +149,26 @@ def compute_persistent_homology(pointcloud, k=14, max_dim=3, batch_size=1000):
     
     print(f"Computing persistent homology on pointcloud of shape {pointcloud.shape}")
     
-    # Compute persistent homology using ripser
     try:
-        diagrams = ripser(pointcloud, maxdim=max_dim)['dgms']
-        return diagrams
+        if USE_GPU:
+            # Use ripser++ with GPU acceleration
+            print("Using GPU acceleration for persistent homology")
+            
+            # Convert numpy array to torch tensor and move to GPU
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            point_cloud_tensor = torch.tensor(pointcloud, dtype=torch.float32).to(device)
+            
+            # Compute distance matrix on GPU
+            dist_matrix = torch.cdist(point_cloud_tensor, point_cloud_tensor)
+            
+            # Use ripser++ to compute persistence diagrams
+            dgms = rpp_py.run_rips_plusplus(dist_matrix.cpu().numpy(), max_dim)
+            
+            return dgms
+        else:
+            # Fallback to standard ripser
+            diagrams = ripser(pointcloud, maxdim=max_dim)['dgms']
+            return diagrams
     except Exception as e:
         print(f"Error computing persistent homology: {e}")
         # Return empty diagrams if computation fails
@@ -206,14 +231,14 @@ def visualize_betti_numbers(betti_numbers, title="Betti Numbers"):
     
     return plt.gcf()
 
-def calibrate_scales(pointclouds, k=14, max_dim=3, n_samples=3):
+def calibrate_scales(pointclouds, k=14, max_dim=2, n_samples=3):
     """
     Calibrate scales for persistent homology.
     
     Args:
         pointclouds: Dictionary of pointclouds
         k: Number of nearest neighbors
-        max_dim: Maximum homology dimension (increased to 3)
+        max_dim: Maximum homology dimension
         n_samples: Number of pointclouds to sample for calibration
         
     Returns:
@@ -251,12 +276,15 @@ def calibrate_scales(pointclouds, k=14, max_dim=3, n_samples=3):
         except Exception as e:
             print(f"Error during calibration: {e}")
     
-    # Define scales based on persistence range
-    if max_persistence > 0:
+    # Define scales based on persistence range - ensure ascending order
+    if max_persistence > 0.5:
         scales = np.linspace(0.5, max_persistence * 1.2, 5)
-        return scales
     else:
-        return [0.5, 1.0, 1.5, 2.0, 2.5]  # Default scales
+        # Default ascending scales if max_persistence is too small
+        scales = np.linspace(0.1, 2.0, 5)
+    
+    print(f"Calibrated scales: {scales}")
+    return scales
 
 def analyze_topology(model, data_loader, device, activation_name, pca_components=50):
     """
