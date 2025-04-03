@@ -19,23 +19,29 @@ def create_pointclouds(features, labels, class_label=0):
     Args:
         features: Dictionary containing feature vectors
         labels: Labels for the feature vectors
-        class_label: Class label to filter (0 or 1)
+        class_label: Class label to filter (0 for digit 0) - not needed when using topology_loader
         
     Returns:
         Dictionary of pointclouds for different positions
     """
-    # Filter to get only the specified class
-    class_mask = (labels == class_label)
+    # When using topology_loader, all samples are already class 0, no need to filter
+    # Just use all samples
     
     # Prepare pointclouds dictionary
     pointclouds = {}
     
-    # Define the target size for pointclouds (reduced to 1000 for memory efficiency)
+    # Define the target size for pointclouds
     target_size = 1000
     
-    # Report the number of samples in this class
-    class_sample_count = class_mask.sum().item()
-    print(f"Creating pointclouds for class {class_label}: {class_sample_count} samples available")
+    # Report the number of samples
+    num_samples = len(labels)
+    print(f"Creating pointclouds with {num_samples} samples of digit 0")
+    
+    # Ensure we have sensible target size
+    if num_samples < target_size:
+        print(f"WARNING: Only {num_samples} samples available. "
+              f"Reducing target size to {num_samples} to avoid artificial upsampling.")
+        target_size = num_samples
     
     # For each key in features (attention/mlp)
     for key, feature_list in features.items():
@@ -43,36 +49,33 @@ def create_pointclouds(features, labels, class_label=0):
         
         # Process each layer
         for layer_idx, feature_tensor in enumerate(feature_list):
-            # Get features for the specified class
-            class_features = feature_tensor[class_mask]
-            
             # Calculate the central patch position
             # For a 7x7 grid (49 patches), the central patch is at position 24 (0-indexed)
             # Add 1 to account for CLS token at position 0
             central_patch_idx = 24 + 1
             
+            # Top-left corner patch is the first patch after CLS token (index 1)
+            top_left_patch_idx = 1
+            
             # Create exactly 3 pointclouds
             layer_pointclouds = {
                 # CLS token pointcloud
-                'cls': class_features[:, 0, :].cpu().numpy(),
+                'cls': feature_tensor[:, 0, :].cpu().numpy(),
                 
-                # Central patch pointcloud (at position 4,4)
-                'central_patch': class_features[:, central_patch_idx, :].cpu().numpy(),
+                # Central patch pointcloud
+                'central_patch': feature_tensor[:, central_patch_idx, :].cpu().numpy(),
                 
-                # Total patches pointcloud - sample more patches to reach the target size
-                'total_patches': class_features[:min(500, len(class_features)), 1:, :].reshape(-1, class_features.shape[-1]).cpu().numpy()
+                # Top-left corner patch
+                'top_left_patch': feature_tensor[:, top_left_patch_idx, :].cpu().numpy()
             }
             
-            # Ensure consistent size by sampling if needed
+            # Sample exactly target_size points from each position
             for position, cloud in layer_pointclouds.items():
-                # For total_patches, we might need to downsample
-                if len(cloud) > target_size:
-                    indices = np.random.choice(len(cloud), target_size, replace=False)
-                    layer_pointclouds[position] = cloud[indices]
-                # For cls and central_patch, we might need to upsample (duplicate points)
-                elif len(cloud) < target_size and position != 'total_patches':
-                    # Duplicate points with replacement to reach target size
-                    indices = np.random.choice(len(cloud), target_size, replace=True)
+                num_available = len(cloud)
+                
+                if num_available > target_size:
+                    # Downsample to exactly target_size points using evenly spaced indices
+                    indices = np.linspace(0, num_available-1, target_size, dtype=int)
                     layer_pointclouds[position] = cloud[indices]
             
             pointclouds[key].append(layer_pointclouds)
@@ -119,7 +122,7 @@ def apply_pca(pointclouds, n_components=50):
     
     return reduced_pointclouds
 
-def compute_persistent_homology(pointcloud, k=14, max_dim=3, batch_size=1000):
+def compute_persistent_homology(pointcloud, k=14, max_dim=2, batch_size=1000):
     """
     Compute persistent homology for a pointcloud.
     
@@ -206,7 +209,7 @@ def visualize_betti_numbers(betti_numbers, title="Betti Numbers"):
     
     return plt.gcf()
 
-def calibrate_scales(pointclouds, k=14, max_dim=3, n_samples=3):
+def calibrate_scales(pointclouds, k=14, max_dim=2, n_samples=3):
     """
     Calibrate scales for persistent homology.
     
@@ -219,44 +222,11 @@ def calibrate_scales(pointclouds, k=14, max_dim=3, n_samples=3):
     Returns:
         List of recommended scales
     """
-    print("Calibrating scales for persistent homology...")
+    print("Using fixed scale range as specified (0.2 to 1.0 with 0.1 increments)")
     
-    # Sample pointclouds for calibration
-    sampled_clouds = []
-    
-    # Try to get one of each type of pointcloud
-    positions_to_try = ['cls', 'central_patch', 'total_patches']
-    
-    for key in pointclouds:
-        if len(sampled_clouds) < n_samples:
-            for layer_idx, position_clouds in enumerate(pointclouds[key]):
-                for position in positions_to_try:
-                    if position in position_clouds and len(position_clouds[position]) > 0 and len(sampled_clouds) < n_samples:
-                        sampled_clouds.append((key, layer_idx, position, position_clouds[position]))
-                        break
-    
-    # Determine max persistence
-    max_persistence = 0
-    
-    for key, layer_idx, position, cloud in sampled_clouds:
-        try:
-            # Compute persistent homology
-            diagrams = compute_persistent_homology(cloud, k=k, max_dim=max_dim)
-            
-            # Find maximum finite death time
-            for dim, diagram in enumerate(diagrams):
-                finite_deaths = diagram[diagram[:, 1] < np.inf, 1]
-                if len(finite_deaths) > 0:
-                    max_persistence = max(max_persistence, np.max(finite_deaths))
-        except Exception as e:
-            print(f"Error during calibration: {e}")
-    
-    # Define scales based on persistence range
-    if max_persistence > 0:
-        scales = np.linspace(0.5, max_persistence * 1.2, 5)
-        return scales
-    else:
-        return [0.5, 1.0, 1.5, 2.0, 2.5]  # Default scales
+    # Use fixed scales as specified
+    scales = np.arange(0.2, 1.1, 0.1)
+    return scales
 
 def analyze_topology(model, data_loader, device, activation_name, pca_components=50):
     """
@@ -278,15 +248,22 @@ def analyze_topology(model, data_loader, device, activation_name, pca_components
     all_features = []
     all_labels = []
     
-    # Process a moderate number of batches (8 batches is a good balance)
-    max_batches = 8
+    # Target number of class 0 samples
+    target_class0_samples = 1000
+    
+    # Maximum number of batches to process to avoid excessive computation
+    max_batches = 50
     
     print(f"Extracting features for {activation_name} model...")
+    current_class0_count = 0
+    processed_batches = 0
+    
     with torch.no_grad():
         for i, (images, labels) in enumerate(data_loader):
             if i >= max_batches:
+                print(f"Reached maximum batch limit ({max_batches}). Stopping feature extraction.")
                 break
-                
+            
             images = images.to(device)
             
             # Forward pass
@@ -297,7 +274,19 @@ def analyze_topology(model, data_loader, device, activation_name, pca_components
             all_features.append(features)
             all_labels.append(labels)
             
-            print(f"Processed batch {i+1}/{max_batches}", end='\r')
+            current_class0_count += len(labels)
+            processed_batches += 1
+            
+            print(f"Processed batch {processed_batches}, Total class 0 samples: {current_class0_count}/{target_class0_samples}", end='\r')
+            
+            # Stop if we've collected enough class 0 samples
+            if current_class0_count >= target_class0_samples:
+                print(f"\nReached target of {target_class0_samples} class 0 samples. Stopping feature extraction.")
+                break
+    
+    # Check if any features were collected
+    if not all_features:
+        raise ValueError("No features were collected. Please check the data loader.")
     
     # Combine features from batches
     combined_features = {
@@ -306,34 +295,30 @@ def analyze_topology(model, data_loader, device, activation_name, pca_components
     }
     combined_labels = torch.cat(all_labels, dim=0)
     
-    print(f"\nExtracted features from {len(combined_labels)} images")
+    print(f"\nExtracted features from {len(combined_labels)} images with class 0")
     
-    # Create pointclouds
+    # Create pointclouds for class 0 only
     print("Creating pointclouds...")
     pointclouds_class0 = create_pointclouds(combined_features, combined_labels, class_label=0)
-    pointclouds_class1 = create_pointclouds(combined_features, combined_labels, class_label=1)
     
     # Apply PCA
     print("Applying PCA...")
     reduced_pointclouds_class0 = apply_pca(pointclouds_class0, n_components=pca_components)
-    reduced_pointclouds_class1 = apply_pca(pointclouds_class1, n_components=pca_components)
     
-    # Calibrate scales
+    # Get fixed scales
     scales = calibrate_scales(reduced_pointclouds_class0)
-    print(f"Calibrated scales: {scales}")
+    print(f"Using scales: {scales}")
     
     # Compute topology
     results = {
-        'class0': {'attention': [], 'mlp': []},
-        'class1': {'attention': [], 'mlp': []}
+        'class0': {'attention': [], 'mlp': []}
     }
     
     # Total number of computations for progress tracking
     total_computations = 0
-    for cls_data in [reduced_pointclouds_class0, reduced_pointclouds_class1]:
-        for key in ['attention', 'mlp']:
-            for position_clouds in cls_data[key]:
-                total_computations += len(position_clouds)
+    for key in ['attention', 'mlp']:
+        for position_clouds in reduced_pointclouds_class0[key]:
+            total_computations += len(position_clouds)
     
     # Initialize progress counter
     current_computation = 0
@@ -361,28 +346,6 @@ def analyze_topology(model, data_loader, device, activation_name, pca_components
                         print(f"\nError processing {key} layer {layer_idx}, position {position}: {e}")
             
             results['class0'][key].append(layer_results)
-    
-    # Analyze each position for class 1
-    for key in ['attention', 'mlp']:
-        for layer_idx, position_clouds in enumerate(reduced_pointclouds_class1[key]):
-            layer_results = {}
-            
-            for position, cloud in position_clouds.items():
-                current_computation += 1
-                if len(cloud) > 0:
-                    print(f"Progress: {current_computation}/{total_computations} - Class 1, {key}, Layer {layer_idx}, {position}")
-                    try:
-                        # Compute persistent homology
-                        diagrams = compute_persistent_homology(cloud)
-                        
-                        # Calculate Betti numbers
-                        betti_numbers = calculate_betti_numbers(diagrams, scales)
-                        
-                        layer_results[position] = betti_numbers
-                    except Exception as e:
-                        print(f"\nError processing {key} layer {layer_idx}, position {position}: {e}")
-            
-            results['class1'][key].append(layer_results)
     
     print("\nTopology analysis complete!")
     return results, scales 
