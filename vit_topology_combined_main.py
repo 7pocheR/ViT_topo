@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Main script for analyzing topology in Vision Transformers
+Combined main script for analyzing topology in Vision Transformers
+Supports both Euclidean and graph geodesic distance methods.
 Based on "Topology of Deep Neural Networks" (Naitzat et al., 2020)
 """
 
@@ -13,15 +14,16 @@ import torchvision
 import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
 import os
 import time
 import json
 import datetime
+import argparse
 
 # Project imports
 from vit_model import SimpleViT
-from topology_analysis import compute_persistent_homology, calculate_betti_numbers, analyze_topology, visualize_betti_numbers
+from topology_analysis_combined import analyze_topology, visualize_betti_numbers
+from visualize_topology_3d_for_integration import visualize_all_results, load_and_visualize_from_dir
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
@@ -29,7 +31,6 @@ np.random.seed(42)
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
 
 def prepare_mnist_data():
     """
@@ -194,9 +195,9 @@ def prepare_topology_data():
     
     return topology_loader
 
-def train_model(model, train_loader, activation_name, epochs=30):
+def train_model(model, train_loader, activation_name, depth, width, epochs=30):
     """Train the ViT model"""
-    print(f"Training {activation_name} model...")
+    print(f"Training {activation_name} model (depth={depth}, width={width})...")
     
     # Loss and optimizer
     criterion = nn.BCEWithLogitsLoss()
@@ -247,7 +248,7 @@ def train_model(model, train_loader, activation_name, epochs=30):
             break
     
     # Save the model
-    save_path = f'model_{activation_name.lower()}.pth'
+    save_path = f'model_{activation_name.lower()}_emb{width}_blocks{depth}.pth'
     torch.save(model.state_dict(), save_path)
     print(f"Model saved to {save_path}")
     
@@ -274,7 +275,7 @@ def evaluate_model(model, test_loader):
     print(f'Test Accuracy: {accuracy:.2f}%')
     return accuracy
 
-def visualize_topology_results(results, scales, activation_name, output_dir='results'):
+def visualize_topology_results(results, scales, activation_name, method='euclidean', output_dir='results'):
     """
     Visualize topology analysis results.
     
@@ -282,6 +283,7 @@ def visualize_topology_results(results, scales, activation_name, output_dir='res
         results: Dictionary of Betti numbers
         scales: List of scales
         activation_name: Name of activation function
+        method: 'euclidean' or 'geodesic'
         output_dir: Output directory for plots
     """
     # Create output directory
@@ -289,12 +291,13 @@ def visualize_topology_results(results, scales, activation_name, output_dir='res
     
     # Plot Betti numbers for each position and component for class 0
     class_name = "class0"
-    class_dir = os.path.join(output_dir, f"{activation_name}_{class_name}")
+    method_suffix = "_" + method
+    class_dir = os.path.join(output_dir, f"{activation_name}{method_suffix}_{class_name}")
     os.makedirs(class_dir, exist_ok=True)
     
     for component in ['attention', 'mlp']:
-        # For each Betti dimension (0, 1, 2, 3)
-        for betti_dim in range(4):  # β₀, β₁, β₂, β₃
+        # For each Betti dimension (0, 1, 2)
+        for betti_dim in range(3):  # β₀, β₁, β₂
             # Create a figure for this component and Betti dimension
             plt.figure(figsize=(15, 10))
             
@@ -321,7 +324,7 @@ def visualize_topology_results(results, scales, activation_name, output_dir='res
             
             plt.xlabel('Layer')
             plt.ylabel(f'Betti Number β{betti_dim}')
-            plt.title(f'{activation_name} - {class_name} - {component} - β{betti_dim}')
+            plt.title(f'{activation_name} ({method.capitalize()}) - {class_name} - {component} - β{betti_dim}')
             plt.grid(True)
             plt.legend()
             
@@ -330,7 +333,7 @@ def visualize_topology_results(results, scales, activation_name, output_dir='res
             plt.close()
     
     # Save the numerical results
-    with open(os.path.join(output_dir, f"{activation_name}_results.json"), 'w') as f:
+    with open(os.path.join(output_dir, f"{activation_name}_{method}_results.json"), 'w') as f:
         # Convert to serializable format
         serializable_results = {}
         for class_name, class_results in results.items():
@@ -359,91 +362,222 @@ def visualize_topology_results(results, scales, activation_name, output_dir='res
         
         json.dump(serializable_results, f, indent=2, cls=NumpyEncoder)
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Vision Transformer Topology Analysis')
+    
+    parser.add_argument('--method', type=str, default='euclidean', choices=['euclidean', 'geodesic'],
+                        help='Distance method to use (euclidean or geodesic)')
+    
+    parser.add_argument('--train', action='store_true',
+                        help='Train models if not already trained')
+    
+    parser.add_argument('--model', type=str, default='both', choices=['gelu', 'relu', 'both'],
+                        help='Which activation model to analyze (gelu, relu, or both)')
+    
+    parser.add_argument('--auto-scales', action='store_true',
+                        help='Use automatic scale selection algorithms')
+    
+    parser.add_argument('--k', type=int, default=14,
+                        help='Number of nearest neighbors for geodesic method (default: 14)')
+    
+    # Add new arguments for model architecture
+    parser.add_argument('--depth', type=int, default=8,
+                        help='Number of transformer blocks/layers (default: 8)')
+    
+    parser.add_argument('--width', type=int, default=24,
+                        help='Embedding dimension for the transformer (default: 24)')
+    
+    parser.add_argument('--heads', type=int, default=4,
+                        help='Number of attention heads (default: 4)')
+    
+    parser.add_argument('--mlp-ratio', type=float, default=1.5,
+                        help='MLP ratio for transformer blocks (default: 1.5)')
+    
+    # Add argument for controlling PCA
+    parser.add_argument('--use-pca', action='store_true',
+                        help='Apply PCA dimensionality reduction to features (only valid with Euclidean distance)')
+    
+    parser.add_argument('--pca-components', type=int, default=20,
+                        help='Number of PCA components to use if PCA is enabled (default: 20)')
+    
+    # Add argument for 3D visualization
+    parser.add_argument('--visualize-3d', action='store_true',
+                        help='Create 3D visualizations of topology results')
+    
+    parser.add_argument('--no-visualization', action='store_true',
+                        help='Skip all visualizations (useful for batch processing)')
+    
+    return parser.parse_args()
+
 def main():
     """Main function to execute the entire pipeline"""
-    # Step 1: Prepare data
-    train_loader, test_loader = prepare_mnist_data()
+    # Parse command-line arguments
+    args = parse_arguments()
     
-    # Step 2: Define model architectures (with GELU and ReLU)
-    print("Creating models...")
+    # Validate arguments - PCA only makes sense with Euclidean distance
+    if args.use_pca and args.method == 'geodesic':
+        print("ERROR: PCA can only be used with Euclidean distance method.")
+        print("PCA distorts the neighborhood structure that geodesic distance is trying to capture.")
+        print("Please use either:")
+        print("  1. Euclidean distance with PCA: --method euclidean --use-pca")
+        print("  2. Geodesic distance without PCA: --method geodesic")
+        return
+    
+    print(f"Using device: {device}")
+    print(f"Analysis method: {args.method}")
+    print(f"Automatic scale selection: {args.auto_scales}")
+    print(f"Model architecture - Depth: {args.depth}, Width: {args.width}, Heads: {args.heads}")
+    if args.method == 'euclidean':
+        print(f"Using PCA: {args.use_pca}")
+        if args.use_pca:
+            print(f"PCA components: {args.pca_components}")
+    if args.method == 'geodesic':
+        print(f"Initial k value for geodesic method: {args.k}")
     
     # Configure model parameters
     model_params = {
         "img_size": 28,
         "patch_size": 4,
         "in_channels": 1,
-        "embedding_dim": 24,           # Increased from 16 to 24
-        "num_heads": 4,
-        "num_transformer_blocks": 8,   # Reduced from 12 to 8
-        "mlp_ratio": 1.5,
+        "embedding_dim": args.width,
+        "num_heads": args.heads,
+        "num_transformer_blocks": args.depth,
+        "mlp_ratio": args.mlp_ratio,
     }
     
+    # Determine model file names based on architecture
+    model_suffix = f"_emb{args.width}_blocks{args.depth}"
+    
     # Create models with different activations
-    model_gelu = SimpleViT(
-        activation='gelu',
-        **model_params
-    ).to(device)
+    models_to_analyze = []
+    if args.model in ['gelu', 'both']:
+        model_gelu = SimpleViT(
+            activation='gelu',
+            **model_params
+        ).to(device)
+        models_to_analyze.append(('GELU', model_gelu, f'model_gelu{model_suffix}.pth'))
     
-    model_relu = SimpleViT(
-        activation='relu',
-        **model_params
-    ).to(device)
+    if args.model in ['relu', 'both']:
+        model_relu = SimpleViT(
+            activation='relu',
+            **model_params
+        ).to(device)
+        models_to_analyze.append(('ReLU', model_relu, f'model_relu{model_suffix}.pth'))
     
-    # Check if models exist, otherwise train them
-    model_path_gelu = 'model_gelu_emb24_blocks8.pth'
-    model_path_relu = 'model_relu_emb24_blocks8.pth'
+    # Check if we need to train models
+    models_need_training = False
+    for _, model, model_path in models_to_analyze:
+        if not os.path.exists(model_path):
+            models_need_training = True
+            break
     
-    if os.path.exists(model_path_gelu):
-        print("Loading pretrained GELU model...")
-        model_gelu.load_state_dict(torch.load(model_path_gelu))
+    # Train models if needed
+    if models_need_training and args.train:
+        # Prepare data for training
+        train_loader, test_loader = prepare_mnist_data()
+        
+        for activation_name, model, model_path in models_to_analyze:
+            if not os.path.exists(model_path):
+                print(f"Training {activation_name} model...")
+                model = train_model(model, train_loader, activation_name, args.depth, args.width)
+                # Evaluate model
+                evaluate_model(model, test_loader)
+            else:
+                print(f"Loading pre-trained {activation_name} model from {model_path}")
+                model.load_state_dict(torch.load(model_path, map_location=device))
+    elif models_need_training and not args.train:
+        print("Some models need training but --train flag is not set.")
+        print("Pre-trained models are required for analysis.")
+        print("Re-run with the --train flag to train missing models first.")
+        return
     else:
-        # Step 3: Train models
-        model_gelu = train_model(model_gelu, train_loader, activation_name="GELU")
-        # Save with new name
-        torch.save(model_gelu.state_dict(), model_path_gelu)
-    
-    if os.path.exists(model_path_relu):
-        print("Loading pretrained ReLU model...")
-        model_relu.load_state_dict(torch.load(model_path_relu))
-    else:
-        model_relu = train_model(model_relu, train_loader, activation_name="ReLU")
-        # Save with new name
-        torch.save(model_relu.state_dict(), model_path_relu)
-    
-    # Step 4: Evaluate models
-    print("\nEvaluating models:")
-    gelu_accuracy = evaluate_model(model_gelu, test_loader)
-    relu_accuracy = evaluate_model(model_relu, test_loader)
-    
-    print(f"\nGELU Model Accuracy: {gelu_accuracy:.2f}%")
-    print(f"ReLU Model Accuracy: {relu_accuracy:.2f}%")
+        # Load pre-trained models
+        for activation_name, model, model_path in models_to_analyze:
+            print(f"Loading pre-trained {activation_name} model from {model_path}")
+            model.load_state_dict(torch.load(model_path, map_location=device))
     
     # Create a separate data loader specifically for topology analysis
     topology_loader = prepare_topology_data()
     
     # Create timestamp for results directory
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = f'results_{timestamp}_emb24_blocks8'
+    method_suffix = "_" + args.method
+    model_arch_suffix = f"_d{args.depth}w{args.width}"
+    pca_suffix = "_pca" if args.use_pca else "_nopca"
+    results_dir = f'results{method_suffix}{model_arch_suffix}{pca_suffix}_{timestamp}'
     os.makedirs(results_dir, exist_ok=True)
     
-    # Step 5: Analyze topology
+    # Analyze topology for each model
     print(f"\nAnalyzing topology (saving to {results_dir})...")
     
-    # GELU model
-    gelu_results, gelu_scales = analyze_topology(
-        model_gelu, topology_loader, device, "GELU", pca_components=24, output_dir=results_dir
-    )
+    all_results = {}
+    all_scales = {}
     
-    # ReLU model
-    relu_results, relu_scales = analyze_topology(
-        model_relu, topology_loader, device, "ReLU", pca_components=24, output_dir=results_dir
-    )
+    for activation_name, model, _ in models_to_analyze:
+        print(f"\nAnalyzing {activation_name} model...")
+        
+        # Determine PCA components if PCA is enabled
+        pca_components = args.pca_components
+        if args.use_pca:
+            # Adjust PCA components based on embedding dimension if not explicitly set
+            if args.pca_components == 20:  # Using the default value
+                pca_components = max(20, args.width // 2)
+                print(f"Automatically adjusted PCA components to: {pca_components}")
+        
+        # Run topology analysis with the specified method
+        results, scales = analyze_topology(
+            model, 
+            topology_loader, 
+            device, 
+            activation_name, 
+            method=args.method, 
+            k=args.k, 
+            pca_components=pca_components, 
+            auto_select_scales=args.auto_scales, 
+            output_dir=results_dir,
+            use_pca=args.use_pca
+        )
+        
+        all_results[activation_name] = results
+        all_scales[activation_name] = scales
+        
+        # Visualize results unless skipped
+        if not args.no_visualization:
+            visualize_topology_results(
+                results, 
+                scales, 
+                activation_name, 
+                method=args.method, 
+                output_dir=results_dir
+            )
     
-    # Step 6: Visualize results
-    print("\nVisualizing results...")
-    visualize_topology_results(gelu_results, gelu_scales, "GELU", output_dir=results_dir)
-    visualize_topology_results(relu_results, relu_scales, "ReLU", output_dir=results_dir)
+    # Save configuration details for this run with timestamp
+    config = vars(args)
+    config['timestamp'] = timestamp
+    config['device'] = str(device)
     
+    config_file = os.path.join(results_dir, f'config_{timestamp}.json')
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    # Create 3D visualizations if requested
+    if args.visualize_3d and not args.no_visualization:
+        print("\nCreating 3D visualizations of topology results...")
+        vis_dirs = visualize_all_results(results_dir, all_results, all_scales)
+        print(f"3D visualizations created in: {', '.join(vis_dirs.values())}")
+    
+    print(f"\nAll topology analyses complete. Results saved to {results_dir}.")
+    # Create a symbolic link to the latest results for easy access
+    try:
+        latest_link = 'results_latest'
+        if os.path.exists(latest_link) or os.path.islink(latest_link):
+            os.remove(latest_link)
+        os.symlink(results_dir, latest_link)
+        print(f"Created symbolic link '{latest_link}' pointing to the latest results.")
+    except Exception as e:
+        print(f"Could not create symbolic link to latest results: {e}")
+
 if __name__ == "__main__":
     start_time = time.time()
     main()

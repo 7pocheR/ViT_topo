@@ -21,6 +21,13 @@ data/
 
 # Results
 results/
+results_*/
+**/results_*/
+downloaded_results/
+downloaded_results_3d/
+**/fixed_scale_visualizations/
+trial_results/
+results_latest
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -33,4 +40,12 @@ results/
 
 # Logs
 *.log
-*.out 
+*.out
+
+# Backup
+backup/
+
+# Other
+ripser-plusplus/
+euclidean_run.log
+*:Zone.Identifier 
